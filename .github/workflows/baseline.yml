@@ -1,0 +1,103 @@
+name: Upstream test baselines
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/baseline.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-tests:
+    name: ${{ matrix.subject }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - subject: pane-control
+            repository: jameschen83/chatgpt_pane_control
+            revision: 7c617224c8af16ffc678ddd5640068199e8c9ad3
+            node: '24'
+            manager: pnpm
+            manager-version: '10.11.0'
+          - subject: voyager
+            repository: voyager-crew/voyager
+            revision: f5d615a181ebf7a35ad535dcabdedbf4ed015095
+            node: '24'
+            manager: bun
+            manager-version: '1.3.12'
+          - subject: multi-ai-chat
+            repository: TED-H-com/multi-ai-chat
+            revision: ed7953d0d634caf148376e89a432222f32cc44b7
+            node: '22.18.0'
+            manager: npm
+            manager-version: bundled
+          - subject: voyager-cli
+            repository: voyager-crew/voyager-cli
+            revision: 44ebff31e1f4da93c07a52551f042c1d62d38818
+            node: '24'
+            manager: bun
+            manager-version: '1.4.0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Anonymous pinned upstream checkout
+        env:
+          DONOR: ${{ matrix.repository }}
+          REVISION: ${{ matrix.revision }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          git init upstream
+          git -C upstream fetch --depth=1 "https://github.com/${DONOR}.git" "${REVISION}"
+          git -C upstream checkout --detach FETCH_HEAD
+          test "$(git -C upstream rev-parse HEAD)" = "$REVISION"
+          git -C upstream log -1 --format='%H %cI %s'
+          printf 'OS: '; uname -a
+          cat /etc/os-release
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Set up Bun
+        if: matrix.manager == 'bun'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ matrix.manager-version }}
+          no-cache: true
+      - name: Set up pnpm
+        if: matrix.manager == 'pnpm'
+        env:
+          VERSION: ${{ matrix.manager-version }}
+        run: npm install --global --no-audit --no-fund "pnpm@$VERSION"
+      - name: Install locked dependencies
+        working-directory: upstream
+        env:
+          MANAGER: ${{ matrix.manager }}
+        run: |
+          node --version
+          "$MANAGER" --version
+          case "$MANAGER" in
+            pnpm) pnpm install --frozen-lockfile ;;
+            bun) bun install --frozen-lockfile ;;
+            npm) npm ci --no-audit --no-fund ;;
+            *) exit 2 ;;
+          esac
+      - name: Run native tests
+        working-directory: upstream
+        env:
+          MANAGER: ${{ matrix.manager }}
+          CI: 'true'
+        run: "$MANAGER run test"
+      - name: Check Voyager folder benchmark
+        if: matrix.subject == 'voyager'
+        working-directory: upstream
+        run: bun run bench:check
