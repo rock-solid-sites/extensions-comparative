@@ -1,0 +1,8 @@
+# T03 composed task-slot/dispatcher result — 2026-11-26
+
+[Run 45857385701, job 140039216933](https://github.com/rock-solid-sites/extensions-comparative/actions/runs/45857385701/job/140039216933), workflow commit 56b49e5bb25284080cd13f9eeea647fb9b691092; protocol and probe identity in experiments/2026-11-26-t03-composed-protocol.md. Verified completed success and actual logs. Both installed/declared protocol packages 0.5.0. Native CLI task-slot tests 16/16, native dispatcher delivery tests 12/12, composed 4/4 including duplicate-oracle control.
+- Normal and duplicate task deliveries: one synthetic page effect, result reply ok.
+- Sender accepted result, result response lost, dispatcher reconstructed using same storage, outbox drained: one synthetic page effect, result replies ok then duplicate; assertions verify outbox cleared, no additional start and sender slot empty.
+- Sender accepted ack but response lost: zero synthetic page effects; sender receives server-unreachable error, no second start on replay.
+- Oracle rejects deliberately duplicated effects.
+Bounded positive evidence for actual task-slot + dispatcher composition with direct client shim and fake page/storage. No full CLI job state/persistence, HTTP validation/auth, actual content-side send or real provider acceptance, full extension/browser process restart, or exactly-once guarantee. No discrepancy found. Next select only consequential missing boundary: actual jobRunner/JobStore and real HTTP bridge route, or actual content composer harness, depending on workspace requirements. Do not repeat already covered component cases. No new execution launched.
