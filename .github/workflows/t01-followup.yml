@@ -1,0 +1,63 @@
+name: T01 controller effects and selector candidate
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/t01-followup.yml'
+      - 'experiments/t01-content-probe.py'
+      - 'experiments/t01-priority-candidate.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    name: t01-${{ matrix.variant }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [original, priority-candidate]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Fetch exact donor
+        run: |
+          git init upstream
+          git -C upstream fetch --depth=1 https://github.com/jameschen83/chatgpt_pane_control.git 7c617224c8af16ffc678ddd5640068199e8c9ad3
+          git -C upstream checkout --detach FETCH_HEAD
+          test "$(git -C upstream rev-parse HEAD)" = 7c617224c8af16ffc678ddd5640068199e8c9ad3
+      - name: Install locked dependencies
+        working-directory: upstream
+        run: |
+          node --version
+          npm install --global --no-audit --no-fund pnpm@10.11.0
+          pnpm --version
+          pnpm install --frozen-lockfile
+      - name: Apply candidate only to disposable checkout
+        if: matrix.variant == 'priority-candidate'
+        working-directory: upstream
+        run: |
+          python3 ../experiments/t01-priority-candidate.py
+          git diff -- src/adapter.js
+      - name: Native suite
+        id: native
+        working-directory: upstream
+        run: pnpm test
+      - name: Original adapter probe
+        id: adapter
+        if: always() && steps.native.outcome == 'success'
+        working-directory: upstream
+        run: |
+          cp ../experiments/t01-adapter.mjs tests/t01-adapter.mjs
+          node --test tests/t01-adapter.mjs
+      - name: Controller and cache effect probe
+        if: always() && steps.native.outcome == 'success'
+        working-directory: upstream
+        run: |
+          python3 ../experiments/t01-content-probe.py
+          node --test --test-name-pattern='T01 controller' tests/content.test.js
