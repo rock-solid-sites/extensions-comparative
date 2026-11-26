@@ -1,0 +1,71 @@
+name: T04 capability visibility and effect authorization
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/t04-capabilities.yml', 'experiments/t04-opencode-append.ts', 'experiments/t04-paseo-revocation.mjs']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  opencode:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.4'
+          no-cache: true
+      - name: Checkout pinned OpenCode
+        run: |
+          git init upstream
+          git -C upstream fetch --depth=1 https://github.com/anomalyco/opencode.git 82d8fc5bec961043e47b4d2d3fcd03667f40148a
+          git -C upstream checkout --detach FETCH_HEAD
+          test "$(git -C upstream rev-parse HEAD)" = 82d8fc5bec961043e47b4d2d3fcd03667f40148a
+      - name: Install native dependencies
+        working-directory: upstream
+        run: |
+          bun --version
+          python3 -m pip install setuptools || pip install setuptools
+          bun install --frozen-lockfile
+      - name: Native permission and registry baseline
+        working-directory: upstream/packages/core
+        run: bun run test test/permission.test.ts test/tool-registry.test.ts test/config/policy.test.ts
+      - name: Restricted snapshot forced invocation probe
+        working-directory: upstream
+        run: |
+          test "$(git hash-object packages/core/test/tool-registry.test.ts)" = 96aed427bca5aa92d6691f3ce866679a50d17d6f
+          cat ../experiments/t04-opencode-append.ts >> packages/core/test/tool-registry.test.ts
+          cd packages/core
+          bun run test test/tool-registry.test.ts --test-name-pattern=T04
+  paseo:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Checkout pinned connector
+        run: |
+          git init upstream
+          git -C upstream fetch --depth=1 https://github.com/rock-solid-sites/ases-plugins.git d3c61a8a59d01969241e5e455e2bf47cb2b6d892
+          git -C upstream checkout --detach FETCH_HEAD
+          test "$(git -C upstream rev-parse HEAD)" = d3c61a8a59d01969241e5e455e2bf47cb2b6d892
+      - name: Native business-policy and CLI version baseline
+        working-directory: upstream/connectors/paseo-control
+        run: node --test bridge-core.test.mjs cli-version.test.mjs
+      - name: Revocation during asynchronous preflight
+        working-directory: upstream/connectors/paseo-control
+        run: |
+          cp ../../../experiments/t04-paseo-revocation.mjs t04-paseo-revocation.test.mjs
+          node --test t04-paseo-revocation.test.mjs
