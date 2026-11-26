@@ -54,4 +54,15 @@ jobs:
         working-directory: voyager
         run: |
           cp ../experiments/t03-http-job.test.ts src/pages/background/bridge/__tests__/t03-http-job.test.ts
-          bun run test src/pages/background/bridge/__tests__/t03-http-job.test.ts
+          # Route just this cross-runtime probe through the donor's existing Node-realm project.
+          test "$(git hash-object vitest.config.ts)" = ccdc12d5704145591dd116109c0262f14d95a743
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("vitest.config.ts")
+          s = p.read_text()
+          anchor = "const FORKS_ONLY = [\n"
+          assert s.count(anchor) == 1
+          p.write_text(s.replace(anchor, anchor + "  'src/pages/background/bridge/__tests__/t03-http-job.test.ts',\n"))
+          PY
+          git diff -- vitest.config.ts
+          bun run test --project forks src/pages/background/bridge/__tests__/t03-http-job.test.ts
