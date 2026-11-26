@@ -60,7 +60,7 @@ async function runT01Content(when) {
     assert.deepEqual(
       [evidence.selectedOriginal,evidence.selectedDecoy,evidence.decoyTagged,evidence.toolbarInDecoy,
        evidence.outlineContainsDecoy,evidence.snapshotContainsDecoy,evidence.cacheContainsDecoy],
-      [true,false,false,false,false,false],
+      [true,false,false,false,false,false,false],
       'inactive root must not receive controls or enter conversation evidence');
   } finally {ctx.dispose();}
 }
