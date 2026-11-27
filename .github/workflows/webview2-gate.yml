@@ -49,7 +49,7 @@ jobs:
           $exe = Get-Item updater/ChatWorkspace-Update.exe
           $p = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw 'Updater self-test failed' }
-          Write-Output "PASS updater replacement, rollback, invalid payload and missing host checks"
+          Write-Output "PASS updater replacement, rollback, invalid payload and closed-install resolution checks"
           Write-Output "Updater executable bytes: $($exe.Length)"
           Get-FileHash $exe.FullName -Algorithm SHA256
       - uses: actions/upload-artifact@v7
