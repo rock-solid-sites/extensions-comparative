@@ -9,6 +9,7 @@
     <AssemblyName>ChatWorkspaceWebViewGate</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="workspace.js" LogicalName="ChatWorkspace.workspace.js" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
   </ItemGroup>
 </Project>
