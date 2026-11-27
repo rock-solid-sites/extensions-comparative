@@ -1,4 +1,4 @@
-name: WebView2 compatibility gate build
+name: WebView2 workspace increment build
 on:
   push:
     branches: [main]
@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: webview2-workspace-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: windows-latest
@@ -17,7 +20,16 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - name: Publish isolated probe
+      - name: Test registry semantics
+        run: node --test experiments/webview2-gate/workspace.test.cjs
+      - name: Test sidebar fixture
+        shell: pwsh
+        run: |
+          npm install --prefix $env:RUNNER_TEMP/chatws-fixture --no-audit --no-fund --ignore-scripts jsdom@26.1.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:NODE_PATH = "$env:RUNNER_TEMP/chatws-fixture/node_modules"
+          node --test experiments/webview2-gate/workspace.dom.test.cjs
+      - name: Publish workspace probe
         run: dotnet publish experiments/webview2-gate/Gate.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
       - name: Verify binary
         shell: pwsh
