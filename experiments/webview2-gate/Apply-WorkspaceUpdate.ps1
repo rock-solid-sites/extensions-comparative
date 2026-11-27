@@ -9,7 +9,8 @@ function Assert-Module([string]$File) {
     if ((Get-Item -LiteralPath $File).Length -gt 2000000) { throw 'Module is too large' }
     $m = Get-Content -LiteralPath $File -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($m.contract -ne 1 -or $m.version -notmatch '^[0-9a-fA-F]{40}$' -or $m.script -isnot [string] -or -not $m.script) { throw 'Invalid module or incompatible host contract' }
-    $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($m.script)))
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $actual = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($m.script))).Replace('-','') } finally { $sha.Dispose() }
     if ($actual -ne $m.sha256) { throw 'Module hash mismatch' }
     return $m.version
 }
