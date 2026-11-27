@@ -1,4 +1,4 @@
-/* CHATWS increment 1: native-page metadata only. No network/host bridge. */
+/* CHATWS increment 2: native-page metadata only. No network/host bridge. */
 (function(){
 "use strict";
 const TYPES=["unknown","chat","work","codex","opencode"];
@@ -12,10 +12,14 @@ function identity(raw){
     return m?{id:m[1].toLowerCase(),path:u.pathname.replace(/\/$/,"")}:null;
   }catch{return null;}
 }
-function initial(id){return {id,type:"unknown",state:"unknown",draft:false,unread:false,project:"",related:[],updated:0};}
+function initial(id){return {id,type:"unknown",typeSource:"unknown",state:"unknown",draft:false,unread:false,project:"",related:[],updated:0};}
 function reduce(old,event){
   const n={...old};
-  if(event.kind==="type"&&TYPES.includes(event.value))n.type=event.value;
+  if(event.kind==="type"&&TYPES.includes(event.value)){n.type=event.value;n.typeSource=event.value==="unknown"?"unknown":"manual";}
+  if(event.kind==="native-type"&&n.typeSource!=="manual"&&TYPES.includes(event.value)){
+    n.type=event.value;n.typeSource=event.value==="unknown"?"unknown":"native";
+  }
+  if(event.kind==="native-unread"&&!event.visible)n.unread=true;
   if(event.kind==="draft"&&typeof event.value==="boolean")n.draft=event.value;
   if(event.kind==="running")n.state="running";
   if(event.kind==="detached"&&n.state==="running")n.state="unknown";
@@ -37,6 +41,7 @@ function restore(raw){
       if(!identity("/c/"+id)||!v||typeof v!=="object")continue;
       const n=initial(id);
       n.type=TYPES.includes(v.type)?v.type:"unknown";
+      n.typeSource=n.type==="unknown"?"unknown":v.typeSource==="native"?"native":"manual";
       n.state=STATES.includes(v.state)&&v.state!=="running"?v.state:"unknown";
       n.draft=v.draft===true;n.unread=v.unread===true;
       n.project=typeof v.project==="string"?v.project.slice(0,120):"";
@@ -57,11 +62,25 @@ function sortRows(rows,records,mode){
     return 0;
   });
 }
-if(typeof module!=="undefined"&&module.exports){module.exports={identity,initial,reduce,restore,scopeKey,sortRows};return;}
+// Candidate provider semantic contract: ONLY explicitly named, row-local markers.
+ // These are synthetic-fixture-supported, not yet verified against authenticated provider DOM.
+const markerTypes=Object.freeze({"conversation-type-chat":"chat","conversation-type-work":"work","conversation-type-codex":"codex"});
+const markerStates=Object.freeze({"conversation-status-running":"running","conversation-status-completed":"completed","conversation-status-failed":"failed"});
+function semanticEvidence(markers){
+  const types=new Set(),states=new Set();let unread=false;
+  for(const m of markers){
+    if(Object.hasOwn(markerTypes,m))types.add(markerTypes[m]);
+    if(Object.hasOwn(markerStates,m))states.add(markerStates[m]);
+    if(m==="conversation-status-unread")unread=true;
+  }
+  return {type:types.size===1?[...types][0]:"unknown",state:states.size===1?[...states][0]:"unknown",unread,conflict:types.size>1||states.size>1};
+}
+if(typeof module!=="undefined"&&module.exports){module.exports={identity,initial,reduce,restore,scopeKey,sortRows,semanticEvidence};return;}
 if(location.origin!=="https://chatgpt.com"||window!==top||window.__chatwsV1)return;
 window.__chatwsV1=true;
 let records=Object.create(null),scope=null,active=null,runId=null,armed=false,mode="native",timer=null,panel=null,lastRender="",observer=null,storageError=false;
 const owner="data-chatws-v1";
+let rowEvidence=new Map();
 function save(){if(!scope)return;try{localStorage.setItem(scopeKey(scope),JSON.stringify(records));storageError=false;}catch{storageError=true;}}
 function update(id,event){
   if(!scope||!id)return;
@@ -83,9 +102,27 @@ function discover(side){
     const i=identity(a.getAttribute("href"));if(!i||seen.has(i.id))continue;
     seen.add(i.id);
     const badge=a.querySelector("span["+owner+"]"),raw=a.textContent||"";
-    rows.push({...i,title:(badge&&raw.endsWith(badge.textContent)?raw.slice(0,raw.length-badge.textContent.length):raw).trim().slice(0,160)||i.id});
+    const markers=[a,...a.querySelectorAll("[data-testid]")].filter(el=>!el.closest("["+owner+"]")&&!el.closest('[hidden],[aria-hidden="true"]')).map(el=>el.getAttribute("data-testid"));
+    rows.push({...i,title:(badge&&raw.endsWith(badge.textContent)?raw.slice(0,raw.length-badge.textContent.length):raw).trim().slice(0,160)||i.id,evidence:semanticEvidence(markers)});
   }
   return rows;
+}
+function observeRows(rows){
+  if(!scope)return;
+  const next=new Map();
+  for(const {id,evidence:e} of rows){
+    const old=rowEvidence.get(id);
+    next.set(id,e);
+    if(e.type!=="unknown"||old?.type!=="unknown"&&old?.type!==undefined)update(id,{kind:"native-type",value:e.type});
+    const shown=id===active&&visible();
+    if(e.state==="running")update(id,{kind:"running"});
+    else if(e.state==="completed"||e.state==="failed"){
+      if(old?.state!==e.state)update(id,{kind:"native",value:e.state,visible:shown});
+    }else if(old?.state==="running"&&runId!==id)update(id,{kind:"detached"});
+    if(e.unread&&!old?.unread)update(id,{kind:"native-unread",visible:shown});
+  }
+  for(const [id,e] of rowEvidence)if(!next.has(id)&&e.state==="running"&&runId!==id)update(id,{kind:"detached"});
+  rowEvidence=next;
 }
 function observeCurrent(){
   const id=identity(location.href)?.id||null;
@@ -114,7 +151,7 @@ function switchScope(){
   const key=scopeKey(value);
   if(value&&!key){window.alert("Invalid label.");return;}
   if(runId)update(runId,{kind:"detached"});
-  scope=key?value:null;runId=null;armed=false;storageError=false;
+  scope=key?value:null;runId=null;armed=false;storageError=false;rowEvidence.clear();
   try{records=key?restore(localStorage.getItem(key)):Object.create(null);}catch{records=Object.create(null);storageError=true;}
   // Account labels are explicit, never inferred from cookies or account UI.
   lastRender="";schedule();
@@ -134,13 +171,16 @@ function render(side,rows){
   }
   panel.append(controls);
   if(active){
-    const r=records[active]||initial(active),line=node("div");
+    const targetId=active,r=records[targetId]||initial(targetId),line=node("div");
+    const stillCurrent=()=>identity(location.href)?.id===targetId&&active===targetId;
     const select=node("select");select.style.cssText="color:inherit;background:transparent;font:inherit";
     for(const t of TYPES){const o=node("option",t);o.value=t;select.append(o);}select.value=r.type;
-    select.addEventListener("change",()=>{update(active,{kind:"type",value:select.value});schedule();});
-    line.append(select,button("Project",()=>{const value=window.prompt("Non-sensitive project reference (local reference only; page-origin storage)",r.project);if(value!==null){update(active,{kind:"project",value});schedule();}}),button("Relate",()=>{const v=window.prompt("Related ChatGPT conversation URL");const i=v&&identity(v);if(i){update(active,{kind:"related",value:i.id});schedule();}}));
+    select.addEventListener("change",()=>{if(stillCurrent()){update(targetId,{kind:"type",value:select.value});schedule();}});
+    line.append(select,button("Project",()=>{const value=window.prompt("Non-sensitive project reference (local reference only; page-origin storage)",r.project);if(value!==null&&stillCurrent()){update(targetId,{kind:"project",value});schedule();}}),button("Relate",()=>{const v=window.prompt("Related ChatGPT conversation URL");const i=v&&identity(v);if(i&&stillCurrent()){update(targetId,{kind:"related",value:i.id});schedule();}}));
     panel.append(line,node("div",[r.project,r.draft?"Draft":"",r.state!=="unknown"?r.state:""].filter(Boolean).join(" · ")));
-    for(const id of r.related){const row=node("div");const a=node("a","Related: "+(rows.find(x=>x.id===id)?.title||id));a.href="/c/"+id;row.append(a,button("×",()=>{update(active,{kind:"unlink",value:id});schedule();}));panel.append(row);}
+    for(const id of r.related){const row=node("div");const a=node("a","Related: "+(rows.find(x=>x.id===id)?.title||id));a.href=rows.find(x=>x.id===id)?.path||"/c/"+id;
+      a.addEventListener("click",e=>{e.preventDefault();const target=[...side.querySelectorAll("a[href]")].find(x=>!x.closest("["+owner+"]")&&identity(x.getAttribute("href"))?.id===id);if(target)target.click();else window.alert("Related conversation is not in the current native list. Open it through ChatGPT search.");});
+      row.append(a,button("×",()=>{if(stillCurrent()){update(targetId,{kind:"unlink",value:id});schedule();}}));panel.append(row);}
   }
   if(mode!=="native"){
     const list=node("div");list.style.cssText="max-height:240px;overflow:auto";
@@ -156,7 +196,7 @@ function decorate(side){
   for(const a of side.querySelectorAll("a[href]")){
     if(a.closest("["+owner+"]"))continue;
     const i=identity(a.getAttribute("href"));if(!i)continue;
-    const r=scope&&records[i.id],text=r?[r.type==="unknown"?"?":r.type,r.draft?"draft":"",r.unread?"unread":"",r.state==="running"?"running":r.state==="ended"?"ended":""].filter(Boolean).join(" · "):"";
+    const r=scope&&records[i.id],text=r?[r.type==="unknown"?"?":r.type,r.draft?"draft":"",r.unread?"unread":"",r.state!=="unknown"?r.state:""].filter(Boolean).join(" · "):"";
     let badge=a.querySelector("span["+owner+"]");
     if(!text){badge?.remove();continue;}
     if(!badge){badge=node("span");badge.style.cssText="margin-left:4px;font-size:10px;opacity:.75;white-space:nowrap";a.append(badge);}
@@ -168,16 +208,16 @@ function scan(){
   if(location.origin!=="https://chatgpt.com")return;
   observeCurrent();
   const side=findSidebar();
-  if(!side){panel?.remove();panel=null;lastRender="";return;}
+  if(!side){observeRows([]);panel?.remove();panel=null;lastRender="";return;}
   const rows=discover(side);
   if(scope){let dirty=false,count=Object.keys(records).length;for(const r of rows){if(!records[r.id]&&count<5000){records[r.id]=initial(r.id);dirty=true;count++;}}if(dirty)save();}
-  render(side,rows);decorate(side);
+  observeRows(rows);render(side,rows);decorate(side);
 }
 function schedule(){if(timer===null)timer=setTimeout(scan,180);}
 function start(){
   if(observer)return;
   observer=new MutationObserver(changes=>{if(changes.some(m=>!m.target.closest?.("["+owner+"]")&&!(m.type==="childList"&&[...m.addedNodes,...m.removedNodes].length&&[...m.addedNodes,...m.removedNodes].every(n=>n.nodeType===1&&n.hasAttribute(owner)))))schedule();});
-  observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:["data-testid","href","disabled"]});
+  observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:["data-testid","href","disabled","hidden","aria-hidden"]});
   document.addEventListener("input",schedule,true);document.addEventListener("visibilitychange",schedule);window.addEventListener("focus",schedule);window.addEventListener("popstate",schedule);window.navigation?.addEventListener("currententrychange",schedule);schedule();
 }
 if(document.body)start();else document.addEventListener("DOMContentLoaded",start,{once:true});
