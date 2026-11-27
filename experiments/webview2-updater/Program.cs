@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
+using Microsoft.Win32;
 
 internal static class Program
 {
@@ -63,12 +64,43 @@ internal static class Program
         }
         finally { if (File.Exists(stage)) File.Delete(stage); }
     }
-    static Process SelectHost()
+    const string RegistryKey = @"Software\ChatWorkspace\Updater";
+    static Process? SelectHost()
     {
         var processes = Process.GetProcessesByName(HostName);
+        if (processes.Length == 0) return null;
         if (processes.Length == 1 && processes[0].SessionId == Process.GetCurrentProcess().SessionId) return processes[0];
         foreach (var p in processes) p.Dispose();
-        throw new InvalidOperationException("Open exactly one Chat Workspace window, then run this update again.");
+        throw new InvalidOperationException("Multiple Chat Workspace processes are running, or a process belongs to another Windows session. Close the extra instances before updating.");
+    }
+    static string? ValidPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) return null;
+        try { var full = Path.GetFullPath(path); ValidateInstall(full); return full; }
+        catch { return null; }
+    }
+    static string? ResolveClosedInstall(string? remembered, string updaterDirectory, Func<string?> choose)
+    {
+        return ValidPath(remembered) ?? ValidPath(Path.Combine(updaterDirectory, HostName + ".exe")) ?? ValidPath(choose());
+    }
+    static string? ReadRemembered()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RegistryKey);
+        return key?.GetValue("InstallPath") as string;
+    }
+    static void Remember(string exe)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(RegistryKey);
+        key.SetValue("InstallPath", exe, RegistryValueKind.String);
+    }
+    static string? ChooseInstall()
+    {
+        var dialog = new OpenFileDialog {
+            Title = "Locate Chat Workspace (only needed once)",
+            Filter = "Chat Workspace|ChatWorkspaceWebViewGate.exe",
+            FileName = HostName + ".exe", CheckFileExists = true, Multiselect = false
+        };
+        return dialog.ShowDialog() == true ? dialog.FileName : null;
     }
     static Process StartHost(string exe) => Process.Start(new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(exe)! })
         ?? throw new InvalidOperationException("Could not start Chat Workspace.");
@@ -83,14 +115,26 @@ internal static class Program
         try
         {
             using var host = SelectHost();
-            var exe = host.MainModule?.FileName ?? throw new InvalidOperationException("Cannot locate the running host.");
+            var exe = host is null
+                ? ResolveClosedInstall(ReadRemembered(), AppContext.BaseDirectory, ChooseInstall)
+                : host.MainModule?.FileName;
+            if (exe is null)
+            {
+                if (host is null) return; // Cancel or invalid selection; no mutation.
+                throw new InvalidOperationException("Cannot locate the running host.");
+            }
             ValidateInstall(exe);
+            Remember(exe);
             var target = Path.Combine(Path.GetDirectoryName(exe)!, ModuleName);
             var old = File.ReadAllBytes(target);
             if (Validate(old) == version) { MessageBox.Show("This update is already installed.", "Chat Workspace"); return; }
-            if (MessageBox.Show("Install the update and restart Chat Workspace? Finish any active turns and save unsent drafts first.", "Chat Workspace update", MessageBoxButton.OKCancel, MessageBoxImage.Information) != MessageBoxResult.OK) return;
-            if (host.HasExited || !host.CloseMainWindow() || !host.WaitForExit(15000))
-                throw new InvalidOperationException("Chat Workspace did not close normally. No files were changed.");
+            bool restart = host is not null;
+            if (host is not null && !host.HasExited)
+            {
+                if (MessageBox.Show("Install the update and restart Chat Workspace? Finish any active turns and save unsent drafts first.", "Chat Workspace update", MessageBoxButton.OKCancel, MessageBoxImage.Information) != MessageBoxResult.OK) return;
+                if (!host.HasExited && (!host.CloseMainWindow() || !host.WaitForExit(15000)))
+                    throw new InvalidOperationException("Chat Workspace did not close normally. No files were changed.");
+            }
             var otherHosts = Process.GetProcessesByName(HostName);
             try { if (otherHosts.Length != 0) throw new InvalidOperationException("Another Chat Workspace process is running. No files were changed."); }
             finally { foreach (var p in otherHosts) p.Dispose(); }
@@ -101,14 +145,18 @@ internal static class Program
                 ValidateInstall(exe);
                 Replace(target, data, backup);
                 applied = true;
-                using var restarted = StartHost(exe);
-                if (restarted.WaitForExit(3000)) throw new InvalidOperationException("Updated app exited immediately.");
+                if (restart)
+                {
+                    using var restarted = StartHost(exe);
+                    if (restarted.WaitForExit(3000)) throw new InvalidOperationException("Updated app exited immediately.");
+                }
+                else MessageBox.Show("Update installed. Chat Workspace will use it next time you open the app.", "Chat Workspace");
             }
             catch
             {
                 if (applied) Replace(target, old, target + ".failed");
                 var running = Process.GetProcessesByName(HostName);
-                try { if (running.Length == 0) using (StartHost(exe)) { } }
+                try { if (restart && running.Length == 0) using (StartHost(exe)) { } }
                 finally { foreach (var p in running) p.Dispose(); }
                 throw;
             }
@@ -138,10 +186,26 @@ internal static class Program
             rejected = false;
             try { ValidateInstall(Path.Combine(root, HostName + ".exe")); } catch { rejected = true; }
             if (!rejected) throw new Exception("Invalid installation accepted.");
-            // Runner has no interactive installed host.
-            rejected = false;
-            try { using var p = SelectHost(); } catch (InvalidOperationException) { rejected = true; }
-            if (!rejected) throw new Exception("Missing host not rejected.");
+            // Runner has no interactive installed host. Closed state is valid.
+            using (var p = SelectHost()) { if (p != null) throw new Exception("Unexpected running host."); }
+            var exe = Path.Combine(root, HostName + ".exe");
+            var names = new[] { HostName + ".exe", HostName + ".dll", HostName + ".runtimeconfig.json" };
+            foreach (var name in names) File.WriteAllText(Path.Combine(root, name), name);
+            File.WriteAllBytes(Path.Combine(root, "baseline-manifest.json"), JsonSerializer.SerializeToUtf8Bytes(new {
+                contract = 1, files = names.Select(name => new { path = name, sha256 = Hash(File.ReadAllBytes(Path.Combine(root, name))) })
+            }));
+            if (ResolveClosedInstall(exe, Path.GetTempPath(), () => throw new Exception("Unexpected picker")) != exe)
+                throw new Exception("Remembered closed installation not resolved.");
+            if (ResolveClosedInstall(null, root, () => throw new Exception("Unexpected picker")) != exe)
+                throw new Exception("Adjacent closed installation not resolved.");
+            if (ResolveClosedInstall(null, Path.GetTempPath(), () => exe) != exe)
+                throw new Exception("Selected closed installation not resolved.");
+            if (ResolveClosedInstall(null, Path.GetTempPath(), () => null) != null)
+                throw new Exception("Cancelled selection not respected.");
+            File.WriteAllText(exe, "tampered");
+            if (ResolveClosedInstall(exe, root, () => exe) != null)
+                throw new Exception("Invalid install selected.");
+
         }
         finally { Directory.Delete(root, true); }
     }
