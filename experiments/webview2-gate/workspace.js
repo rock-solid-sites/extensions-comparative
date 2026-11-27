@@ -90,10 +90,36 @@ function update(id,event){
 function node(tag,text){const e=document.createElement(tag);if(text)e.textContent=text;e.setAttribute(owner,"");return e;}
 function button(text,fn){const e=node("button",text);e.type="button";e.style.cssText="padding:3px 6px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:inherit";e.addEventListener("click",fn);return e;}
 function visible(){return document.visibilityState==="visible"&&document.hasFocus();}
+// Find a real conversation column, not the encompassing horizontal shell or icon rail.
+function layoutBox(el){
+  if(el.closest('[hidden],[aria-hidden="true"],[inert]'))return null;
+  const r=el.getBoundingClientRect(),style=getComputedStyle(el);
+  if(style.display==="none"||style.visibility==="hidden"||r.width<1||r.height<1)return null;
+  return r;
+}
 function findSidebar(){
-  const candidates=[...document.querySelectorAll("nav,aside")].map(el=>({el,count:[...el.querySelectorAll("a[href]")].filter(a=>identity(a.getAttribute("href"))&&!a.closest("["+owner+"]")).length}));
-  candidates.sort((a,b)=>b.count-a.count);
-  return candidates[0]?.count?candidates[0].el:null;
+  const candidates=new Map();
+  for(const a of document.querySelectorAll("nav a[href],aside a[href],[role=navigation] a[href]")){
+    if(a.closest("["+owner+"]")||!identity(a.getAttribute("href")))continue;
+    const row=layoutBox(a);
+    if(!row||row.width<100||row.left< -8||row.right>innerWidth+8)continue;
+    for(let el=a.parentElement;el&&el!==document.body;el=el.parentElement){
+      if(el.matches("main,[role=main]"))break;
+      const rect=layoutBox(el);
+      if(!rect||rect.width<180||rect.width>480||rect.left< -8||rect.right>innerWidth+8||rect.height<32)continue;
+      const style=getComputedStyle(el);
+      if(style.display.includes("grid")||style.display.includes("flex")&&style.flexDirection.startsWith("row"))continue;
+      if(style.position==="fixed"||style.position==="absolute"||style.overflowY==="hidden"&&rect.height<100)continue;
+      // The anchor should occupy this column, rather than a small nested branch of a wider shell.
+      if(row.left-rect.left>48||rect.right-row.right>48)continue;
+      const entry=candidates.get(el)||{el,ids:new Set(),rect};
+      entry.ids.add(identity(a.getAttribute("href")).id);candidates.set(el,entry);
+    }
+  }
+  // Prefer the column holding the most native rows; for ties prefer the tallest
+  // in-flow column, then the narrower/deeper one over a shell.
+  const sorted=[...candidates.values()].sort((a,b)=>b.ids.size-a.ids.size||b.rect.height-a.rect.height||a.rect.width-b.rect.width);
+  return sorted[0]?.el||null;
 }
 function discover(side){
   const seen=new Set(),rows=[];
@@ -158,7 +184,7 @@ function switchScope(){
 }
 function render(side,rows){
   if(panel&&panel.parentElement!==side){panel.remove();panel=null;lastRender="";}
-  if(!panel){panel=node("section");panel.style.cssText="padding:8px;margin:4px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:8px;font-size:12px;line-height:1.5";side.prepend(panel);}
+  if(!panel){panel=node("section");panel.style.cssText="display:block;position:relative;box-sizing:border-box;min-width:0;max-width:100%;flex:0 0 auto;padding:8px;margin:4px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:8px;font-size:12px;line-height:1.5;overflow-wrap:anywhere";side.prepend(panel);}
   const signature=JSON.stringify([scope,active,mode,storageError,rows.map(r=>[r.id,r.title,records[r.id]]),active&&records[active]]);
   if(signature===lastRender)return;lastRender=signature;
   panel.replaceChildren();
@@ -217,8 +243,8 @@ function schedule(){if(timer===null)timer=setTimeout(scan,180);}
 function start(){
   if(observer)return;
   observer=new MutationObserver(changes=>{if(changes.some(m=>!m.target.closest?.("["+owner+"]")&&!(m.type==="childList"&&[...m.addedNodes,...m.removedNodes].length&&[...m.addedNodes,...m.removedNodes].every(n=>n.nodeType===1&&n.hasAttribute(owner)))))schedule();});
-  observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:["data-testid","href","disabled","hidden","aria-hidden"]});
-  document.addEventListener("input",schedule,true);document.addEventListener("visibilitychange",schedule);window.addEventListener("focus",schedule);window.addEventListener("popstate",schedule);window.navigation?.addEventListener("currententrychange",schedule);schedule();
+  observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:["data-testid","href","disabled","hidden","aria-hidden","inert","class","style"]});
+  document.addEventListener("input",schedule,true);document.addEventListener("visibilitychange",schedule);window.addEventListener("focus",schedule);window.addEventListener("resize",schedule);window.addEventListener("popstate",schedule);window.navigation?.addEventListener("currententrychange",schedule);schedule();
 }
 if(document.body)start();else document.addEventListener("DOMContentLoaded",start,{once:true});
 })();
