@@ -60,7 +60,7 @@ function sortRows(rows,records,mode){
 if(typeof module!=="undefined"&&module.exports){module.exports={identity,initial,reduce,restore,scopeKey,sortRows};return;}
 if(location.origin!=="https://chatgpt.com"||window!==top||window.__chatwsV1)return;
 window.__chatwsV1=true;
-let records=Object.create(null),scope=null,active=null,runId=null,mode="native",timer=null,panel=null,lastRender="",observer=null,storageError=false;
+let records=Object.create(null),scope=null,active=null,runId=null,armed=false,mode="native",timer=null,panel=null,lastRender="",observer=null,storageError=false;
 const owner="data-chatws-v1";
 function save(){if(!scope)return;try{localStorage.setItem(scopeKey(scope),JSON.stringify(records));storageError=false;}catch{storageError=true;}}
 function update(id,event){
@@ -82,8 +82,8 @@ function discover(side){
     if(a.closest("["+owner+"]"))continue;
     const i=identity(a.getAttribute("href"));if(!i||seen.has(i.id))continue;
     seen.add(i.id);
-    const clone=a.cloneNode(true);clone.querySelectorAll("["+owner+"]").forEach(e=>e.remove());
-    rows.push({...i,title:(clone.textContent||"").trim().slice(0,160)||i.id});
+    const badge=a.querySelector("span["+owner+"]"),raw=a.textContent||"";
+    rows.push({...i,title:(badge&&raw.endsWith(badge.textContent)?raw.slice(0,raw.length-badge.textContent.length):raw).trim().slice(0,160)||i.id});
   }
   return rows;
 }
@@ -91,27 +91,30 @@ function observeCurrent(){
   const id=identity(location.href)?.id||null;
   if(id!==active){
     if(runId)update(runId,{kind:"detached"});
-    active=id;runId=null;
+    active=id;runId=null;armed=false;
+    // On SPA navigation the old composer may still be mounted. Do not attribute its running/draft state to the new route.
+    return;
   }
   if(!scope||!active)return;
   const stop=document.querySelector('main button[data-testid="stop-button"]');
   const send=document.querySelector('main button[data-testid="send-button"]');
   const composer=document.querySelector('main #prompt-textarea');
-  if(stop&&stop.isConnected){runId=active;update(active,{kind:"running"});}
+  if(!stop&&send&&send.isConnected)armed=true;
+  if(stop&&stop.isConnected&&armed){runId=active;update(active,{kind:"running"});}
   else if(runId===active&&send&&send.isConnected){
     update(active,{kind:"ended",visible:visible()});runId=null;
   }
   // Draft is presence only; never retain text or attachments.
-  if(composer)update(active,{kind:"draft",value:!!(composer.value||composer.textContent||"").trim()});
+  if(composer&&armed)update(active,{kind:"draft",value:!!(composer.value||composer.textContent||"").trim()});
   if(visible())update(active,{kind:"read"});
 }
 function switchScope(){
-  const value=window.prompt("Local workspace account label (letters, digits, _ or -). Use a different label for each ChatGPT account. Blank disables workspace metadata.",scope||"");
+  const value=window.prompt("Local account label (letters, digits, _ or -). Choose a non-sensitive label for each ChatGPT account; metadata is stored in chatgpt.com local storage. Blank disables workspace metadata.",scope||"");
   if(value===null)return;
   const key=scopeKey(value);
   if(value&&!key){window.alert("Invalid label.");return;}
   if(runId)update(runId,{kind:"detached"});
-  scope=key?value:null;runId=null;storageError=false;
+  scope=key?value:null;runId=null;armed=false;storageError=false;
   try{records=key?restore(localStorage.getItem(key)):Object.create(null);}catch{records=Object.create(null);storageError=true;}
   // Account labels are explicit, never inferred from cookies or account UI.
   lastRender="";schedule();
@@ -135,7 +138,7 @@ function render(side,rows){
     const select=node("select");select.style.cssText="color:inherit;background:transparent;font:inherit";
     for(const t of TYPES){const o=node("option",t);o.value=t;select.append(o);}select.value=r.type;
     select.addEventListener("change",()=>{update(active,{kind:"type",value:select.value});schedule();});
-    line.append(select,button("Project",()=>{const value=window.prompt("Projektor reference or project label (local reference only)",r.project);if(value!==null){update(active,{kind:"project",value});schedule();}}),button("Relate",()=>{const v=window.prompt("Related ChatGPT conversation URL");const i=v&&identity(v);if(i){update(active,{kind:"related",value:i.id});schedule();}}));
+    line.append(select,button("Project",()=>{const value=window.prompt("Non-sensitive project reference (local reference only; page-origin storage)",r.project);if(value!==null){update(active,{kind:"project",value});schedule();}}),button("Relate",()=>{const v=window.prompt("Related ChatGPT conversation URL");const i=v&&identity(v);if(i){update(active,{kind:"related",value:i.id});schedule();}}));
     panel.append(line,node("div",[r.project,r.draft?"Draft":"",r.state!=="unknown"?r.state:""].filter(Boolean).join(" · ")));
     for(const id of r.related){const row=node("div");const a=node("a","Related: "+(rows.find(x=>x.id===id)?.title||id));a.href="/c/"+id;row.append(a,button("×",()=>{update(active,{kind:"unlink",value:id});schedule();}));panel.append(row);}
   }
@@ -143,7 +146,7 @@ function render(side,rows){
     const list=node("div");list.style.cssText="max-height:240px;overflow:auto";
     for(const r of sortRows(rows,records,mode)){
       const v=records[r.id]||initial(r.id),a=node("a",r.title);
-      a.href=r.path;a.style.cssText="display:block;padding:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit";
+      a.href=r.path;a.addEventListener("click",e=>{e.preventDefault();const target=[...side.querySelectorAll("a[href]")].find(x=>!x.closest("["+owner+"]")&&identity(x.getAttribute("href"))?.id===r.id);if(target)target.click();});a.style.cssText="display:block;padding:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit";
       const label=[v.type==="unknown"?"?":v.type,v.draft?"draft":"",v.unread?"unread":"",v.state!=="unknown"?v.state:"",v.project].filter(Boolean).join(" · ");
       a.title=label;a.textContent=r.title+" ["+label+"]";list.append(a);
     }panel.append(list);
@@ -167,7 +170,7 @@ function scan(){
   const side=findSidebar();
   if(!side){panel?.remove();panel=null;lastRender="";return;}
   const rows=discover(side);
-  if(scope){let dirty=false;for(const r of rows){if(!records[r.id]&&Object.keys(records).length<5000){records[r.id]=initial(r.id);dirty=true;}}if(dirty)save();}
+  if(scope){let dirty=false,count=Object.keys(records).length;for(const r of rows){if(!records[r.id]&&count<5000){records[r.id]=initial(r.id);dirty=true;count++;}}if(dirty)save();}
   render(side,rows);decorate(side);
 }
 function schedule(){if(timer===null)timer=setTimeout(scan,180);}
@@ -175,7 +178,7 @@ function start(){
   if(observer)return;
   observer=new MutationObserver(changes=>{if(changes.some(m=>!m.target.closest?.("["+owner+"]")&&!(m.type==="childList"&&[...m.addedNodes,...m.removedNodes].length&&[...m.addedNodes,...m.removedNodes].every(n=>n.nodeType===1&&n.hasAttribute(owner)))))schedule();});
   observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:["data-testid","href","disabled"]});
-  document.addEventListener("input",schedule,true);document.addEventListener("visibilitychange",schedule);window.addEventListener("focus",schedule);window.addEventListener("popstate",schedule);schedule();
+  document.addEventListener("input",schedule,true);document.addEventListener("visibilitychange",schedule);window.addEventListener("focus",schedule);window.addEventListener("popstate",schedule);window.navigation?.addEventListener("currententrychange",schedule);schedule();
 }
 if(document.body)start();else document.addEventListener("DOMContentLoaded",start,{once:true});
 })();
