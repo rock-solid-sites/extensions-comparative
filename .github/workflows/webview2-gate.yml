@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '11.0.x'
       - name: Test registry semantics
         run: node --test experiments/webview2-gate/workspace.test.cjs
       - name: Test sidebar fixture
@@ -30,16 +30,25 @@ jobs:
           $env:NODE_PATH = "$env:RUNNER_TEMP/chatws-fixture/node_modules"
           node --test experiments/webview2-gate/workspace.dom.test.cjs
       - name: Publish workspace probe
-        run: dotnet publish experiments/webview2-gate/Gate.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
+        run: dotnet publish experiments/webview2-gate/Gate.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=false -p:DebugType=None -p:DebugSymbols=false -o out
       - name: Verify binary
         shell: pwsh
         run: |
           $file = Get-Item out/ChatWorkspaceWebViewGate.exe
           if ($file.Length -le 0) { throw "Missing executable" }
           Get-FileHash $file.FullName -Algorithm SHA256
+      - name: Package and test module updates
+        shell: pwsh
+        run: ./experiments/webview2-gate/package.ps1 -PublishDir out -ModuleDir module -Version $env:GITHUB_SHA
       - uses: actions/upload-artifact@v4
         with:
-          name: ChatWorkspaceWebViewGate-win-x64
+          name: ChatWorkspace-baseline-net11-win-x64
           path: out/
+          if-no-files-found: error
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChatWorkspace-module-v1
+          path: module/
           if-no-files-found: error
           retention-days: 3
