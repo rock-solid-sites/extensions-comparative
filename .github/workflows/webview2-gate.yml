@@ -2,7 +2,7 @@ name: WebView2 workspace increment build
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/webview2-gate.yml', 'experiments/webview2-gate/**']
+    paths: ['.github/workflows/webview2-gate.yml', 'experiments/webview2-gate/**', 'experiments/webview2-updater/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -40,6 +40,24 @@ jobs:
       - name: Package and test module updates
         shell: pwsh
         run: ./experiments/webview2-gate/package.ps1 -PublishDir out -ModuleDir module -Version $env:GITHUB_SHA
+      - name: Build and verify single-file update executable
+        shell: pwsh
+        run: |
+          $payload = (Resolve-Path module/workspace-module.json).Path
+          dotnet publish experiments/webview2-updater/Updater.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true "-p:ModuleEnvelope=$payload" -o updater
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = Get-Item updater/ChatWorkspace-Update.exe
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Updater self-test failed' }
+          Write-Output "PASS updater replacement, rollback, invalid payload and missing host checks"
+          Write-Output "Updater executable bytes: $($exe.Length)"
+          Get-FileHash $exe.FullName -Algorithm SHA256
+      - uses: actions/upload-artifact@v7
+        with:
+          path: updater/ChatWorkspace-Update.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 3
       - uses: actions/upload-artifact@v4
         with:
           name: ChatWorkspace-baseline-net11-win-x64
