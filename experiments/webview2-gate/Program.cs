@@ -10,7 +10,7 @@ internal static class Program
     static void Main()
     {
         var app = new Application();
-        var window = new Window { Title = "ChatGPT WebView2 compatibility gate (unofficial)", Width = 1100, Height = 800 };
+        var window = new Window { Title = "Chat Workspace — WebView2 (unofficial)", Width = 1100, Height = 800 };
         var panel = new DockPanel();
         var status = new TextBlock { Text = "Initializing isolated WebView2 profile...", Margin = new Thickness(8), TextWrapping = TextWrapping.Wrap };
         DockPanel.SetDock(status, Dock.Top);
@@ -28,7 +28,12 @@ internal static class Program
                 var core = view.CoreWebView2;
                 core.Settings.AreHostObjectsAllowed = false;
                 core.Settings.IsWebMessageEnabled = false;
-                // No injected code, custom user agent, credential access or popup interception.
+                // No host objects, web messages, custom user agent, credential access or popup interception.
+                // The bundled script self-guards top frame and exact HTTPS origin; no remote code.
+                using var scriptStream = typeof(Program).Assembly.GetManifestResourceStream("ChatWorkspace.workspace.js")
+                    ?? throw new InvalidOperationException("Missing workspace script");
+                using var scriptReader = new StreamReader(scriptStream);
+                await core.AddScriptToExecuteOnDocumentCreatedAsync(await scriptReader.ReadToEndAsync());
                 void ShowOrigin(string? source)
                 {
                     status.Text = Uri.TryCreate(source, UriKind.Absolute, out var uri)
