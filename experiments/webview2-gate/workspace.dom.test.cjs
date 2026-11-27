@@ -7,10 +7,19 @@ const A="11111111-1111-4111-8111-111111111111",B="22222222-2222-4222-8222-222222
 const fixture='<nav><a href="/c/'+A+'">Alpha</a><a href="/g/g-p-123/c/'+B+'">Beta</a></nav><main><div id="prompt-textarea" contenteditable="true"></div><button data-testid="send-button">Send</button></main>';
 const delay=()=>new Promise(r=>setTimeout(r,260));
 const owner="[data-chatws-v1]";
+// jsdom has no layout engine. Explicitly supply the geometry used by the adapter.
+function geometry(w,el,x,y,width,height){
+ el.getBoundingClientRect=()=>({x,y,left:x,top:y,right:x+width,bottom:y+height,width,height});
+}
+function standardLayout(w){
+ const d=w.document,nav=d.querySelector("nav");
+ geometry(w,nav,64,0,340,600);
+ for(const [i,a] of [...nav.querySelectorAll("a")].entries())geometry(w,a,76,80+i*42,310,40);
+}
 function button(d,txt){return [...d.querySelectorAll("button"+owner)].find(b=>b.textContent===txt);}
 test("native sidebar fixture: opt-in, type, draft, turn transition, sorting, route and scope",async()=>{
  const dom=new JSDOM(fixture,{url:"https://chatgpt.com/c/"+A,runScripts:"outside-only",pretendToBeVisual:true});
- const w=dom.window,d=w.document;
+ const w=dom.window,d=w.document;standardLayout(w);
  try{
   w.prompt=()=>"accountA";d.hasFocus=()=>false;
   w.eval(script);await delay();assert.equal(d.querySelectorAll("section"+owner).length,1);
@@ -43,7 +52,7 @@ test("script does not mount on other origins",async()=>{
 
 test("row-local background evidence, hidden markers, ambiguity and non-replay",async()=>{
  const dom=new JSDOM(fixture,{url:"https://chatgpt.com/c/"+A,runScripts:"outside-only",pretendToBeVisual:true});
- const w=dom.window,d=w.document;
+ const w=dom.window,d=w.document;standardLayout(w);
  try{
   w.prompt=()=>"accountA";d.hasFocus=()=>true;w.eval(script);await delay();button(d,"Enable").click();await delay();
   const row=d.querySelectorAll("nav > a")[1],read=()=>JSON.parse(w.localStorage.getItem("chatws:v1:accountA"));
@@ -61,5 +70,25 @@ test("row-local background evidence, hidden markers, ambiguity and non-replay",a
   assert.equal(read()[B].type,"chat");t.remove();await delay();assert.equal(read()[B].type,"chat");
   const stale=d.querySelector("select"+owner);w.history.pushState({},"","/c/"+A);
   stale.value="codex";stale.dispatchEvent(new w.Event("change"));await delay();assert.equal(read()[B].type,"chat");
+ }finally{w.close();}
+});
+
+test("nested navigation rail and full conversation column, collapse and remount",async()=>{
+ const dom=new JSDOM('<nav id="shell" style="display:flex;flex-direction:row"><div id="rail"><button>Home</button></div><div id="column" style="display:flex;flex-direction:column"><header>ChatGPT</header><div id="list"><a href="/c/'+A+'">Alpha</a><a href="/c/'+B+'">Beta</a></div></div></nav><main></main>',{url:"https://chatgpt.com/c/"+A,runScripts:"outside-only",pretendToBeVisual:true});
+ const w=dom.window,d=w.document,rail=d.getElementById("rail"),column=d.getElementById("column"),shell=d.getElementById("shell"),list=d.getElementById("list");
+ try{
+  geometry(w,shell,0,0,404,600);geometry(w,rail,0,0,64,600);geometry(w,column,64,0,340,600);geometry(w,list,64,150,340,200);
+  for(const [i,a] of [...list.querySelectorAll("a")].entries())geometry(w,a,76,170+i*42,310,40);
+  w.eval(script);await delay();
+  const panel=()=>d.querySelector("section"+owner);
+  assert.equal(panel().parentElement,column);assert.equal(rail.querySelector(owner),null);
+  column.hidden=true;await delay();assert.equal(panel(),null);
+  column.hidden=false;await delay();assert.equal(panel().parentElement,column);
+  geometry(w,column,64,0,64,600);geometry(w,list,64,150,64,200);
+  for(const a of list.querySelectorAll("a"))geometry(w,a,70,170,45,40);
+  w.dispatchEvent(new w.Event("resize"));await delay();assert.equal(panel(),null);
+  geometry(w,column,64,0,340,600);geometry(w,list,64,150,340,200);
+  for(const [i,a] of [...list.querySelectorAll("a")].entries())geometry(w,a,76,170+i*42,310,40);
+  w.dispatchEvent(new w.Event("resize"));await delay();assert.equal(panel().parentElement,column);
  }finally{w.close();}
 });
