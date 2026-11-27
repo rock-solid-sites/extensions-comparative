@@ -39,6 +39,7 @@ test("native sidebar fixture: opt-in, type, draft, turn transition, sorting, rou
   assert.equal(d.querySelectorAll("section"+owner+" a").length,0);assert.equal(d.querySelector("nav > a").style.order,"0");
   assert.ok(!d.querySelectorAll("nav > a")[1].textContent.includes("?"));
   assert.equal(d.querySelectorAll("nav > a").length,2);assert.equal(d.querySelector("nav > a").getAttribute("href"),"/c/"+A);
+  const typeSort=d.querySelector('select[aria-label="Sort conversations"]');typeSort.value="type";typeSort.dispatchEvent(new w.Event("change"));await delay();assert.equal(d.querySelectorAll("nav > a")[0].style.order,"1");assert.equal(d.querySelectorAll("nav > a")[1].style.order,"0");
   let clicked=0;d.querySelector("nav > a").addEventListener("click",e=>{e.preventDefault();clicked++;});
   d.querySelector("nav > a").click();assert.equal(clicked,1);
   const recent=d.querySelector('select[aria-label="Sort conversations"]');recent.value="native";recent.dispatchEvent(new w.Event("change"));await delay();assert.equal(d.querySelector("nav > a").style.order,"");
