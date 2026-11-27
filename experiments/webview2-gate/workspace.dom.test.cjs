@@ -40,3 +40,26 @@ test("script does not mount on other origins",async()=>{
  const dom=new JSDOM(fixture,{url:"https://example.com/c/"+A,runScripts:"outside-only"});
  try{dom.window.eval(script);await delay();assert.equal(dom.window.document.querySelectorAll(owner).length,0);}finally{dom.window.close();}
 });
+
+test("row-local background evidence, hidden markers, ambiguity and non-replay",async()=>{
+ const dom=new JSDOM(fixture,{url:"https://chatgpt.com/c/"+A,runScripts:"outside-only",pretendToBeVisual:true});
+ const w=dom.window,d=w.document;
+ try{
+  w.prompt=()=>"accountA";d.hasFocus=()=>true;w.eval(script);await delay();button(d,"Enable").click();await delay();
+  const row=d.querySelectorAll("nav > a")[1],read=()=>JSON.parse(w.localStorage.getItem("chatws:v1:accountA"));
+  function marker(id){const n=d.createElement("span");n.dataset.testid=id;row.append(n);return n;}
+  const t=marker("conversation-type-work"),st=marker("conversation-status-running");
+  const hidden=marker("conversation-type-chat");hidden.hidden=true;
+  await delay();assert.equal(read()[B].type,"work");assert.equal(read()[B].state,"running");
+  const conflict=marker("conversation-status-completed");await delay();assert.equal(read()[B].state,"unknown");conflict.remove();
+  await delay();assert.equal(read()[B].state,"running");
+  st.dataset.testid="conversation-status-completed";await delay();assert.equal(read()[B].state,"completed");assert.equal(read()[B].unread,true);
+  w.history.pushState({},"","/c/"+B);w.dispatchEvent(new w.PopStateEvent("popstate"));await delay();await delay();
+  // A read must not be replayed as a new completion merely by a mutation.
+  d.dispatchEvent(new w.Event("visibilitychange"));await delay();assert.equal(read()[B].unread,false);
+  const sel=d.querySelector("select"+owner);sel.value="chat";sel.dispatchEvent(new w.Event("change"));await delay();
+  assert.equal(read()[B].type,"chat");t.remove();await delay();assert.equal(read()[B].type,"chat");
+  const stale=d.querySelector("select"+owner);w.history.pushState({},"","/c/"+A);
+  stale.value="codex";stale.dispatchEvent(new w.Event("change"));await delay();assert.equal(read()[B].type,"chat");
+ }finally{w.close();}
+});
