@@ -1,0 +1,33 @@
+name: WebView2 compatibility gate build
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/webview2-gate.yml', 'experiments/webview2-gate/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish isolated probe
+        run: dotnet publish experiments/webview2-gate/Gate.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
+      - name: Verify binary
+        shell: pwsh
+        run: |
+          $file = Get-Item out/ChatWorkspaceWebViewGate.exe
+          if ($file.Length -le 0) { throw "Missing executable" }
+          Get-FileHash $file.FullName -Algorithm SHA256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChatWorkspaceWebViewGate-win-x64
+          path: out/
+          if-no-files-found: error
+          retention-days: 3
