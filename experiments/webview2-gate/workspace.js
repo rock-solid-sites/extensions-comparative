@@ -1,4 +1,4 @@
-/* CHATWS increment 2: native-page metadata only. No network/host bridge. */
+/* CHATWS increment 3: native-page metadata only. No network/host bridge. */
 (function(){
 "use strict";
 const TYPES=["unknown","chat","work","codex","opencode"];
@@ -80,7 +80,7 @@ if(location.origin!=="https://chatgpt.com"||window!==top||window.__chatwsV1)retu
 window.__chatwsV1=true;
 let records=Object.create(null),scope=null,active=null,runId=null,armed=false,mode="native",timer=null,panel=null,lastRender="",observer=null,storageError=false;
 const owner="data-chatws-v1";
-let rowEvidence=new Map();
+let rowEvidence=new Map(), ordered=new Map(), manageOpen=false;
 function save(){if(!scope)return;try{localStorage.setItem(scopeKey(scope),JSON.stringify(records));storageError=false;}catch{storageError=true;}}
 function update(id,event){
   if(!scope||!id)return;
@@ -88,7 +88,7 @@ function update(id,event){
   if(!records[id]||n!==old&&JSON.stringify(old)!==JSON.stringify(n)){records[id]=n;save();}
 }
 function node(tag,text){const e=document.createElement(tag);if(text)e.textContent=text;e.setAttribute(owner,"");return e;}
-function button(text,fn){const e=node("button",text);e.type="button";e.style.cssText="padding:3px 6px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:inherit";e.addEventListener("click",fn);return e;}
+function button(text,fn){const e=node("button",text);e.type="button";e.style.cssText="padding:4px 7px;border:0;border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:inherit;text-align:left";e.addEventListener("click",fn);return e;}
 function visible(){return document.visibilityState==="visible"&&document.hasFocus();}
 // Find a real conversation column, not the encompassing horizontal shell or icon rail.
 function layoutBox(el){
@@ -129,7 +129,7 @@ function discover(side){
     seen.add(i.id);
     const badge=a.querySelector("span["+owner+"]"),raw=a.textContent||"";
     const markers=[a,...a.querySelectorAll("[data-testid]")].filter(el=>!el.closest("["+owner+"]")&&!el.closest('[hidden],[aria-hidden="true"]')).map(el=>el.getAttribute("data-testid"));
-    rows.push({...i,title:(badge&&raw.endsWith(badge.textContent)?raw.slice(0,raw.length-badge.textContent.length):raw).trim().slice(0,160)||i.id,evidence:semanticEvidence(markers)});
+    rows.push({...i,anchor:a,title:(badge&&raw.endsWith(badge.textContent)?raw.slice(0,raw.length-badge.textContent.length):raw).trim().slice(0,160)||i.id,evidence:semanticEvidence(markers)});
   }
   return rows;
 }
@@ -154,7 +154,7 @@ function observeCurrent(){
   const id=identity(location.href)?.id||null;
   if(id!==active){
     if(runId)update(runId,{kind:"detached"});
-    active=id;runId=null;armed=false;
+    active=id;runId=null;armed=false;manageOpen=false;
     // On SPA navigation the old composer may still be mounted. Do not attribute its running/draft state to the new route.
     return;
   }
@@ -182,50 +182,91 @@ function switchScope(){
   // Account labels are explicit, never inferred from cookies or account UI.
   lastRender="";schedule();
 }
-function render(side,rows){
+function sortGroups(side,rows){
+  const groups=new Map();
+  for(const r of rows){
+    for(let el=r.anchor;el&&el!==side;el=el.parentElement){
+      const parent=el.parentElement;if(!parent||!side.contains(parent))break;
+      const style=getComputedStyle(parent);
+      if(!style.display.includes("flex")||style.flexDirection!=="column")continue;
+      const children=[...parent.children].filter(x=>!x.hasAttribute(owner));
+      if(children.length<2)continue;
+      const group=[];
+      for(const child of children){
+        const found=rows.filter(row=>child===row.anchor||child.contains(row.anchor));
+        if(found.length!==1){group.length=0;break;}
+        group.push({row:found[0],el:child});
+      }
+      if(group.length===children.length&&new Set(group.map(x=>x.row.id)).size===group.length){groups.set(parent,group);break;}
+    }
+  }
+  // Avoid overlapping groups and never reorder headers or other native controls.
+  return [...groups.values()].filter(g=>!g.some(x=>[...groups.values()].some(h=>h!==g&&h.some(y=>x.el.contains(y.el)||y.el.contains(x.el)))));
+}
+function applyOrder(groups){
+  const wanted=new Map();
+  if(scope&&mode!=="native")for(const g of groups){
+    const sorted=sortRows(g.map(x=>x.row),records,mode);
+    sorted.forEach((r,i)=>wanted.set(g.find(x=>x.row.id===r.id).el,String(i)));
+  }
+  for(const [el,previous] of ordered)if(!wanted.has(el)){
+    if(el.style.getPropertyValue("order")===previous.applied){
+      if(previous.value)el.style.setProperty("order",previous.value,previous.priority);else el.style.removeProperty("order");
+    }
+    ordered.delete(el);
+  }
+  for(const [el,value] of wanted){
+    let original=ordered.get(el);
+    if(!original){original={value:el.style.getPropertyValue("order"),priority:el.style.getPropertyPriority("order"),applied:null};ordered.set(el,original);}
+    else if(el.style.getPropertyValue("order")!==original.applied){original.value=el.style.getPropertyValue("order");original.priority=el.style.getPropertyPriority("order");}
+    if(el.style.getPropertyValue("order")!==value)el.style.setProperty("order",value);
+    original.applied=value;
+  }
+}
+function render(side,rows,groups){
   if(panel&&panel.parentElement!==side){panel.remove();panel=null;lastRender="";}
-  if(!panel){panel=node("section");panel.style.cssText="display:block;position:relative;box-sizing:border-box;min-width:0;max-width:100%;flex:0 0 auto;padding:8px;margin:4px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:8px;font-size:12px;line-height:1.5;overflow-wrap:anywhere";side.prepend(panel);}
-  const signature=JSON.stringify([scope,active,mode,storageError,rows.map(r=>[r.id,r.title,records[r.id]]),active&&records[active]]);
+  if(!panel){panel=node("section");panel.style.cssText="display:block;position:relative;box-sizing:border-box;min-width:0;max-width:100%;flex:0 0 auto;margin:4px 8px;padding:4px 0;font-size:12px;line-height:1.5;border-bottom:1px solid color-mix(in srgb,currentColor 14%,transparent)";side.prepend(panel);}
+  const signature=JSON.stringify([scope,active,mode,storageError,manageOpen,groups.length,active&&records[active],(records[active]?.related||[]).map(id=>rows.find(r=>r.id===id)?.title)]);
   if(signature===lastRender)return;lastRender=signature;
   panel.replaceChildren();
-  const header=node("div","Workspace ");header.style.fontWeight="600";header.append(button(scope?"Account: "+scope:"Enable",switchScope));panel.append(header);
-  if(!scope){panel.append(node("div","Select the local account label to enable metadata."));return;}
-  if(storageError)panel.append(node("div","Local storage unavailable; changes may not persist."));
-  const controls=node("div");controls.style.cssText="display:flex;gap:4px;flex-wrap:wrap;margin:5px 0";
-  for(const [value,label] of [["native","Native"],["activity","Activity"],["type","Type"],["project","Project"]]){
-    const b=button(label,()=>{mode=value;lastRender="";schedule();});b.setAttribute("aria-pressed",String(mode===value));if(mode===value)b.style.fontWeight="700";controls.append(b);
+  const toolbar=node("div");toolbar.style.cssText="display:flex;align-items:center;gap:4px;flex-wrap:wrap";
+  if(!scope){toolbar.append(button("Enable workspace",switchScope));panel.append(toolbar);return;}
+  const label=node("label","Sort by");label.style.cssText="display:flex;align-items:center;gap:4px;flex:1;min-width:0";
+  const sort=node("select");sort.setAttribute("aria-label","Sort conversations");sort.style.cssText="background:transparent;color:inherit;font:inherit;border:0;border-radius:6px;padding:4px;max-width:100%";
+  for(const [value,name] of [["native","Recent"],["activity","Activity"],["type","Type"],["project","Project"]]){
+    const o=node("option",name);o.value=value;o.disabled=value!=="native"&&!groups.length;sort.append(o);
   }
-  panel.append(controls);
+  sort.value=mode;sort.addEventListener("change",()=>{mode=sort.value;lastRender="";schedule();});label.append(sort);toolbar.append(label);
   if(active){
-    const targetId=active,targetScope=scope,r=records[targetId]||initial(targetId),line=node("div");
-    const stillCurrent=()=>scope===targetScope&&identity(location.href)?.id===targetId&&active===targetId;
-    const select=node("select");select.style.cssText="color:inherit;background:transparent;font:inherit";
-    for(const t of TYPES){const o=node("option",t);o.value=t;select.append(o);}select.value=r.type;
-    select.addEventListener("change",()=>{if(stillCurrent()){update(targetId,{kind:"type",value:select.value});schedule();}});
-    line.append(select,button("Project",()=>{const value=window.prompt("Non-sensitive project reference (local reference only; page-origin storage)",r.project);if(value!==null&&stillCurrent()){update(targetId,{kind:"project",value});schedule();}}),button("Relate",()=>{const v=window.prompt("Related ChatGPT conversation URL");const i=v&&identity(v);if(i&&stillCurrent()){update(targetId,{kind:"related",value:i.id});schedule();}}));
-    panel.append(line,node("div",[r.project,r.draft?"Draft":"",r.state!=="unknown"?r.state:""].filter(Boolean).join(" · ")));
-    for(const id of r.related){const row=node("div");const a=node("a","Related: "+(rows.find(x=>x.id===id)?.title||id));a.href=rows.find(x=>x.id===id)?.path||"/c/"+id;
-      a.addEventListener("click",e=>{e.preventDefault();const target=[...side.querySelectorAll("a[href]")].find(x=>!x.closest("["+owner+"]")&&identity(x.getAttribute("href"))?.id===id);if(target)target.click();else window.alert("Related conversation is not in the current native list. Open it through ChatGPT search.");});
-      row.append(a,button("×",()=>{if(stillCurrent()){update(targetId,{kind:"unlink",value:id});schedule();}}));panel.append(row);}
+    const manage=button("Manage chat"+(manageOpen?" ▴":" ▾"),()=>{manageOpen=!manageOpen;lastRender="";schedule();});
+    manage.setAttribute("aria-expanded",String(manageOpen));toolbar.append(manage);
   }
-  if(mode!=="native"){
-    const list=node("div");list.style.cssText="max-height:240px;overflow:auto";
-    for(const r of sortRows(rows,records,mode)){
-      const v=records[r.id]||initial(r.id),a=node("a",r.title);
-      a.href=r.path;a.addEventListener("click",e=>{e.preventDefault();const target=[...side.querySelectorAll("a[href]")].find(x=>!x.closest("["+owner+"]")&&identity(x.getAttribute("href"))?.id===r.id);if(target)target.click();});a.style.cssText="display:block;padding:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit";
-      const label=[v.type==="unknown"?"?":v.type,v.draft?"draft":"",v.unread?"unread":"",v.state!=="unknown"?v.state:"",v.project].filter(Boolean).join(" · ");
-      a.title=label;a.textContent=r.title+" ["+label+"]";list.append(a);
-    }panel.append(list);
+  const settings=button("⚙",switchScope);settings.title="Workspace account settings";settings.setAttribute("aria-label","Workspace account settings");toolbar.append(settings);panel.append(toolbar);
+  if(storageError)panel.append(node("div","Local storage unavailable."));
+  if(!groups.length) {const info=node("div","Native order only in this layout.");info.style.opacity=".65";panel.append(info);}
+  if(!active||!manageOpen)return;
+  const targetId=active,targetScope=scope,r=records[targetId]||initial(targetId);
+  const stillCurrent=()=>scope===targetScope&&identity(location.href)?.id===targetId&&active===targetId;
+  const typeLine=node("label","Conversation type: ");typeLine.style.cssText="display:flex;align-items:center;gap:4px;margin:4px 0";
+  const select=node("select");select.setAttribute("aria-label","Conversation type");select.style.cssText="color:inherit;background:transparent;font:inherit";
+  for(const t of TYPES){const o=node("option",t==="unknown"?"Unassigned":t==="opencode"?"OpenCode":t==="codex"?"Codex":t[0].toUpperCase()+t.slice(1));o.value=t;select.append(o);}select.value=r.type;
+  select.addEventListener("change",()=>{if(stillCurrent()){update(targetId,{kind:"type",value:select.value});schedule();}});
+  typeLine.append(select);panel.append(typeLine);
+  const meta=node("div");meta.style.cssText="display:flex;gap:4px;flex-wrap:wrap";
+  meta.append(button(r.project?"Project: "+r.project:"Set project reference",()=>{const value=window.prompt("Non-sensitive project reference (local reference only; page-origin storage)",r.project);if(value!==null&&stillCurrent()){update(targetId,{kind:"project",value});schedule();}}),button("Link related chat",()=>{const v=window.prompt("Related ChatGPT conversation URL");const i=v&&identity(v);if(i&&stillCurrent()){update(targetId,{kind:"related",value:i.id});schedule();}}));panel.append(meta);
+  for(const id of r.related){const row=node("div"),a=node("a",rows.find(x=>x.id===id)?.title||"Related chat");a.href=rows.find(x=>x.id===id)?.path||"/c/"+id;
+    a.addEventListener("click",e=>{e.preventDefault();const target=[...side.querySelectorAll("a[href]")].find(x=>!x.closest("["+owner+"]")&&identity(x.getAttribute("href"))?.id===id);if(target)target.click();else window.alert("Related conversation is not in the current native list. Open it through ChatGPT search.");});
+    row.append(a,button("×",()=>{if(stillCurrent()){update(targetId,{kind:"unlink",value:id});schedule();}}));panel.append(row);
   }
 }
 function decorate(side){
   for(const a of side.querySelectorAll("a[href]")){
     if(a.closest("["+owner+"]"))continue;
     const i=identity(a.getAttribute("href"));if(!i)continue;
-    const r=scope&&records[i.id],text=r?[r.type==="unknown"?"?":r.type,r.draft?"draft":"",r.unread?"unread":"",r.state!=="unknown"?r.state:""].filter(Boolean).join(" · "):"";
+    const r=scope&&records[i.id],text=r?[r.type==="unknown"?"":r.type==="opencode"?"OpenCode":r.type==="codex"?"Codex":r.type[0].toUpperCase()+r.type.slice(1),r.draft?"Draft":"",r.unread?"Unread":"",r.state==="running"?"Running":r.state==="failed"?"Failed":""].filter(Boolean).join(" · "):"";
     let badge=a.querySelector("span["+owner+"]");
     if(!text){badge?.remove();continue;}
-    if(!badge){badge=node("span");badge.style.cssText="margin-left:4px;font-size:10px;opacity:.75;white-space:nowrap";a.append(badge);}
+    if(!badge){badge=node("span");badge.style.cssText="margin-left:4px;font-size:10px;opacity:.75;white-space:nowrap;pointer-events:none";badge.title="Conversation metadata; change type via Manage chat";a.append(badge);}
     if(badge.textContent!==text)badge.textContent=text;
   }
 }
@@ -234,10 +275,10 @@ function scan(){
   if(location.origin!=="https://chatgpt.com")return;
   observeCurrent();
   const side=findSidebar();
-  if(!side){observeRows([]);panel?.remove();panel=null;lastRender="";return;}
+  if(!side){applyOrder([]);observeRows([]);panel?.remove();panel=null;lastRender="";return;}
   const rows=discover(side);
   if(scope){let dirty=false,count=Object.keys(records).length;for(const r of rows){if(!records[r.id]&&count<5000){records[r.id]=initial(r.id);dirty=true;count++;}}if(dirty)save();}
-  observeRows(rows);render(side,rows);decorate(side);
+  observeRows(rows);const groups=scope?sortGroups(side,rows):[];if(!groups.length)mode="native";applyOrder(groups);render(side,rows,groups);decorate(side);
 }
 function schedule(){if(timer===null)timer=setTimeout(scan,180);}
 function start(){
