@@ -1,0 +1,62 @@
+name: WebView2 performance baseline and restoration
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/webview2-performance-baseline.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    strategy:
+      matrix:
+        variant: [baseline, restore]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.x'
+      - name: Construct diagnostic payload
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          $restore = '0a45718564c7b50c0710d6f9d7bea6aef0bd969a'
+          if ($env:VARIANT -eq 'baseline') {
+            $script = '/* Diagnostic baseline: no workspace injection, storage access, listeners or observers. */'
+            $version = '0000000000000000000000000000000000000001'
+          } else {
+            $script = (git show "${restore}:experiments/webview2-gate/workspace.js") -join "`n"
+            if ($LASTEXITCODE -ne 0 -or -not $script) { throw 'Restore source unavailable' }
+            $version = $restore
+          }
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($script)
+          $sha = [System.Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+          $payload = Join-Path $env:RUNNER_TEMP 'diagnostic-module.json'
+          @{contract=1;version=$version;sha256=$sha;script=$script} | ConvertTo-Json -Compress | Set-Content -Encoding utf8NoBOM $payload
+          "MODULE_PAYLOAD=$payload" >> $env:GITHUB_ENV
+      - name: Publish and verify diagnostic updater
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          dotnet publish experiments/webview2-updater/Updater.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true "-p:ModuleEnvelope=$env:MODULE_PAYLOAD" -o diagnostic
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = Get-Item diagnostic/ChatWorkspace-Update.exe
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Updater self-test failed' }
+          $name = if ($env:VARIANT -eq 'baseline') {'ChatWorkspace-DisableWorkspace.exe'} else {'ChatWorkspace-RestoreWorkspace.exe'}
+          Rename-Item $exe.FullName $name
+          Get-FileHash (Join-Path diagnostic $name) -Algorithm SHA256
+          "DIAGNOSTIC_EXE=diagnostic/$name" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.DIAGNOSTIC_EXE }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 3
