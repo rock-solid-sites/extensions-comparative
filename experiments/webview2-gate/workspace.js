@@ -171,8 +171,8 @@ function render(side,rows){
   }
   panel.append(controls);
   if(active){
-    const targetId=active,r=records[targetId]||initial(targetId),line=node("div");
-    const stillCurrent=()=>identity(location.href)?.id===targetId&&active===targetId;
+    const targetId=active,targetScope=scope,r=records[targetId]||initial(targetId),line=node("div");
+    const stillCurrent=()=>scope===targetScope&&identity(location.href)?.id===targetId&&active===targetId;
     const select=node("select");select.style.cssText="color:inherit;background:transparent;font:inherit";
     for(const t of TYPES){const o=node("option",t);o.value=t;select.append(o);}select.value=r.type;
     select.addEventListener("change",()=>{if(stillCurrent()){update(targetId,{kind:"type",value:select.value});schedule();}});
