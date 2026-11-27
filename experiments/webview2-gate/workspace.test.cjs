@@ -1,6 +1,6 @@
 const assert=require("node:assert/strict");
 const test=require("node:test");
-const {identity,initial,reduce,restore,scopeKey,sortRows}=require("./workspace.js");
+const {identity,initial,reduce,restore,scopeKey,sortRows,semanticEvidence}=require("./workspace.js");
 const A="11111111-1111-4111-8111-111111111111",B="22222222-2222-4222-8222-222222222222";
 test("native URL identity across project moves and query",()=>{
  assert.equal(identity("/c/"+A).id,A);
@@ -48,4 +48,18 @@ test("sort only supplied visible rows and retain native order",()=>{
  for(const mode of ["activity","type","project"])assert.deepEqual(sortRows(rows,records,mode).map(x=>x.id),[B,A]);
  assert.deepEqual(sortRows(rows,records,"native"),rows);
  assert.deepEqual(sortRows(rows,records,"native").map(x=>x.id),[A,B]);
+});
+
+test("explicit row evidence only; ambiguous and unrelated markers stay unknown",()=>{
+ assert.deepEqual(semanticEvidence(["conversation-type-work","conversation-status-running","conversation-status-unread"]),{type:"work",state:"running",unread:true,conflict:false});
+ assert.deepEqual(semanticEvidence(["Work","running","stop-button","constructor"]),{type:"unknown",state:"unknown",unread:false,conflict:false});
+ const conflict=semanticEvidence(["conversation-type-work","conversation-type-chat","conversation-status-running","conversation-status-completed"]);
+ assert.equal(conflict.type,"unknown");assert.equal(conflict.state,"unknown");assert.equal(conflict.conflict,true);
+});
+test("manual type wins; unknown clears override; legacy types preserve manual choice",()=>{
+ let n=reduce(initial(A),{kind:"native-type",value:"work"});
+ assert.equal(n.typeSource,"native");n=reduce(n,{kind:"type",value:"chat"});
+ assert.equal(reduce(n,{kind:"native-type",value:"work"}).type,"chat");
+ n=reduce(n,{kind:"type",value:"unknown"});assert.equal(reduce(n,{kind:"native-type",value:"work"}).type,"work");
+ assert.equal(restore(JSON.stringify({[A]:{type:"chat"}}))[A].typeSource,"manual");
 });
